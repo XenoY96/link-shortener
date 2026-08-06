@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<!--
+  CUTLINE — a link shortener
+  ---------------------------------
+  Design tokens:
+    bg          #0B0D10  near-black ink
+    surface     #15181C  card background
+    surface-2   #1D2126  input background
+    text        #ECEAE5  paper white
+    muted       #8B9096  steel gray
+    accent      #57E8CF  blade teal (the "cut" color)
+    warn        #E8734A  rust (errors)
+  Type: IBM Plex Mono (display + code), Inter (body/UI)
+  Signature: a dashed "cutline" that snips across when a link is generated,
+  echoing the paste -> cut -> short metaphor.
+
+  Security notes (see footer + comments below):
+  - Strict CSP meta tag limits network/script/style origins.
+  - Only https:// links accepted; plain http:// is rejected outright; length-capped.
+  - Custom alias restricted to [A-Za-z0-9_-], length-capped.
+  - Heuristic screening blocks common malicious-link patterns before anything
+    is sent out: embedded login-style credentials (user@host tricks), raw IP
+    addresses instead of domain names, punycode/homograph domains, and
+    abnormally deep subdomain chains. This is pattern-based screening, not a
+    full threat-intelligence lookup — see footer for what that would take.
+  - All dynamic output rendered via textContent, never innerHTML.
+  - No localStorage / cookies / analytics of any kind.
+  - All requests to is.gd use its JSONP callback mode (script-tag based, not
+    fetch) — is.gd's server doesn't send CORS headers, so a plain fetch()
+    call is silently blocked by the browser. JSONP avoids that, still over
+    HTTPS, still to is.gd only.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://is.gd; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none';">
+<title>Cutline — link shortener</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0B0D10;
+    --surface:#15181C;
+    --surface-2:#1D2126;
+    --text:#ECEAE5;
+    --muted:#8B9096;
+    --accent:#57E8CF;
+    --accent-dim:#2E7D6E;
+    --warn:#E8734A;
+    --mono:'IBM Plex Mono',ui-monospace,monospace;
+    --sans:'Inter',system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding:32px 18px 48px;
+  }
+  .wrap{width:100%;max-width:520px;}
+  header{margin-bottom:28px;text-align:left;}
+  h1{
+    font-family:var(--mono);
+    font-weight:700;
+    font-size:clamp(28px,7vw,36px);
+    letter-spacing:-0.02em;
+    margin:0 0 8px;
+    color:var(--text);
+  }
+  h1 span{color:var(--accent);}
+  .tagline{
+    color:var(--muted);
+    font-size:15px;
+    margin:0;
+    line-height:1.5;
+  }
+  .card{
+    background:var(--surface);
+    border:1px solid #23272C;
+    border-radius:6px;
+    padding:22px;
+  }
+  label{
+    display:block;
+    font-size:13px;
+    font-weight:600;
+    color:var(--muted);
+    margin-bottom:6px;
+    letter-spacing:0.01em;
+  }
+  .field{margin-bottom:18px;}
+  input[type="text"], input[type="url"]{
+    width:100%;
+    background:var(--surface-2);
+    border:1px solid #2A2F35;
+    color:var(--text);
+    font-family:var(--sans);
+    font-size:15px;
+    padding:12px 14px;
+    border-radius:4px;
+    outline:none;
+    transition:border-color .15s ease;
+  }
+  input:focus-visible{
+    border-color:var(--accent);
+    box-shadow:0 0 0 2px rgba(87,232,207,0.25);
+  }
+  .alias-row{
+    display:flex;
+    align-items:stretch;
+    background:var(--surface-2);
+    border:1px solid #2A2F35;
+    border-radius:4px;
+    overflow:hidden;
+  }
+  .alias-row:focus-within{
+    border-color:var(--accent);
+    box-shadow:0 0 0 2px rgba(87,232,207,0.25);
+  }
+  .alias-prefix{
+    font-family:var(--mono);
+    font-size:14px;
+    color:var(--muted);
+    padding:12px 0 12px 14px;
+    white-space:nowrap;
+    user-select:none;
+  }
+  .alias-row input{
+    border:none;
+    background:transparent;
+    padding:12px 14px 12px 4px;
+    box-shadow:none !important;
+  }
+  .hint{
+    font-size:12px;
+    color:var(--muted);
+    margin-top:6px;
+  }
+  button.primary{
+    width:100%;
+    background:var(--accent);
+    color:#06110F;
+    border:none;
+    font-family:var(--sans);
+    font-weight:600;
+    font-size:15px;
+    padding:14px;
+    border-radius:4px;
+    cursor:pointer;
+    transition:background .15s ease, transform .1s ease;
+  }
+  button.primary:hover{background:#6FF0DA;}
+  button.primary:active{transform:scale(0.99);}
+  button.primary:disabled{background:var(--accent-dim);color:#9FB6B1;cursor:not-allowed;}
+  button.primary:focus-visible{outline:2px solid var(--text);outline-offset:2px;}
+
+  .error{
+    margin-top:14px;
+    color:var(--warn);
+    font-size:14px;
+    line-height:1.5;
+    display:none;
+  }
+  .error.show{display:block;}
+
+  .cutline{
+    position:relative;
+    height:1px;
+    margin:26px 0;
+    border-top:1px dashed #2A2F35;
+    display:none;
+  }
+  .cutline.show{display:block;}
+  .cutline .scissors{
+    position:absolute;
+    top:-9px;
+    left:0;
+    font-size:14px;
+    transform:translateX(0);
+  }
+  .cutline.snip .scissors{
+    animation:snip .5s ease forwards;
+  }
+  @keyframes snip{
+    from{left:0;}
+    to{left:100%;margin-left:-16px;}
+  }
+
+  .result{display:none;}
+  .result.show{display:block;animation:fadein .3s ease;}
+  @keyframes fadein{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
+
+  .chip{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    background:var(--surface-2);
+    border:1px solid #2A2F35;
+    border-radius:4px;
+    padding:12px 14px;
+  }
+  .chip code{
+    font-family:var(--mono);
+    font-size:14.5px;
+    color:var(--accent);
+    flex:1;
+    overflow-x:auto;
+    white-space:nowrap;
+  }
+  button.copy{
+    background:transparent;
+    border:1px solid #33383E;
+    color:var(--text);
+    font-family:var(--sans);
+    font-size:13px;
+    font-weight:600;
+    padding:8px 14px;
+    border-radius:4px;
+    cursor:pointer;
+    white-space:nowrap;
+    transition:border-color .15s ease, color .15s ease;
+  }
+  button.copy:hover{border-color:var(--accent);color:var(--accent);}
+  button.copy:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+
+  .again{
+    display:inline-block;
+    margin-top:14px;
+    font-size:13px;
+    color:var(--muted);
+    background:none;
+    border:none;
+    text-decoration:underline;
+    cursor:pointer;
+    padding:0;
+  }
+  .again:hover{color:var(--text);}
+
+  footer{
+    max-width:520px;
+    width:100%;
+    margin-top:26px;
+    color:var(--muted);
+    font-size:12.5px;
+    line-height:1.6;
+    text-align:left;
+  }
+  footer a{color:var(--muted);}
+  footer a:hover{color:var(--accent);}
+
+  .credit{
+    margin:22px 0 0;
+    padding-top:16px;
+    border-top:1px solid #1D2126;
+    text-align:center;
+    font-family:var(--mono);
+    font-size:11.5px;
+    letter-spacing:0.05em;
+    color:var(--muted);
+  }
+  .credit span{
+    color:var(--accent);
+    font-weight:600;
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    .cutline.snip .scissors{animation:none;}
+    .result.show{animation:none;}
+    button.primary{transition:none;}
+  }
+
+  .gate-overlay{
+    position:fixed;
+    inset:0;
+    background:rgba(6,7,9,0.94);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+    z-index:1000;
+  }
+  .gate-card{
+    background:var(--surface);
+    border:1px solid #23272C;
+    border-radius:6px;
+    padding:26px;
+    max-width:440px;
+    width:100%;
+    outline:none;
+  }
+  .gate-card h2{
+    font-family:var(--mono);
+    font-weight:600;
+    font-size:20px;
+    margin:0 0 14px;
+    color:var(--text);
+  }
+  .gate-list{
+    margin:0 0 20px;
+    padding-left:18px;
+    color:var(--muted);
+    font-size:14px;
+    line-height:1.6;
+  }
+  .gate-list li{margin-bottom:8px;}
+  .gate-list li:last-child{margin-bottom:0;}
+  .gate-check{
+    display:flex;
+    align-items:flex-start;
+    gap:10px;
+    font-size:13.5px;
+    color:var(--text);
+    margin-bottom:18px;
+    cursor:pointer;
+  }
+  .gate-check input{
+    margin-top:2px;
+    width:16px;
+    height:16px;
+    accent-color:var(--accent);
+    flex-shrink:0;
+    cursor:pointer;
+  }
+  .gate-card button.primary:disabled{
+    background:var(--accent-dim);
+    color:#9FB6B1;
+    cursor:not-allowed;
+  }
+</style>
+</head>
+<body>
+<div class="gate-overlay" id="gateOverlay" role="dialog" aria-modal="true" aria-labelledby="gateTitle">
+  <div class="gate-card" id="gateCard" tabindex="-1">
+    <h2 id="gateTitle">Before you continue</h2>
+    <ul class="gate-list">
+      <li>This tool only shortens links — it doesn't scan, verify, or guarantee where a link leads.</li>
+      <li>Basic checks block a few known phishing patterns, but this is not a full malware or phishing detector.</li>
+      <li>Don't use this to shorten links to illegal, harmful, malicious, or abusive content.</li>
+      <li>Nothing you paste is logged, tracked, or stored here — but you're responsible for what you share once it's shortened.</li>
+    </ul>
+    <label class="gate-check">
+      <input type="checkbox" id="gateCheckbox">
+      <span>I've read this and understand the site's limits.</span>
+    </label>
+    <button type="button" class="primary" id="gateContinueBtn" disabled>Continue</button>
+  </div>
+</div>
+
+<div class="wrap" id="appContent" inert aria-hidden="true">
+  <header>
+    <h1>Cut<span>line</span></h1>
+    <p class="tagline">Paste a long link, cut it down to size.</p>
+  </header>
+
+  <div class="card">
+    <form id="shortenForm" autocomplete="off" novalidate>
+      <div class="field">
+        <label for="longUrl">Long link</label>
+        <input type="url" id="longUrl" name="longUrl" inputmode="url"
+               spellcheck="false" maxlength="2048"
+               placeholder="https://example.com/your/very/long/link" required>
+        <p class="hint">Only secure https:// links are accepted.</p>
+      </div>
+
+      <div class="field">
+        <label for="alias">Custom name (optional)</label>
+        <div class="alias-row">
+          <span class="alias-prefix">is.gd/</span>
+          <input type="text" id="alias" name="alias" maxlength="30"
+                 spellcheck="false" placeholder="myname">
+        </div>
+        <p class="hint">5-30 characters. Letters, numbers, _ only (no hyphens). Leave blank for a random one.</p>
+      </div>
+
+      <button type="submit" class="primary" id="submitBtn">Cut it short</button>
+      <p class="error" id="errorMsg" role="alert" aria-live="assertive"></p>
+    </form>
+
+    <div class="cutline" id="cutline"><span class="scissors">✂️</span></div>
+
+    <div class="result" id="result">
+      <div class="chip">
+        <code id="shortUrlText"></code>
+        <button type="button" class="copy" id="copyBtn">Copy</button>
+      </div>
+      <button type="button" class="again" id="againBtn">Cut another link</button>
+    </div>
+  </div>
+
+  <footer>
+    No accounts. No tracking. Nothing you paste here is stored on this page or anywhere else —
+    it goes straight to <a href="https://is.gd" target="_blank" rel="noopener noreferrer">is.gd</a>,
+    which creates the short link and hands it back.
+  </footer>
+
+  <p class="credit">Built by <span>XenoY96</span></p>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var form = document.getElementById('shortenForm');
+  var longUrlInput = document.getElementById('longUrl');
+  var aliasInput = document.getElementById('alias');
+  var submitBtn = document.getElementById('submitBtn');
+  var errorMsg = document.getElementById('errorMsg');
+  var cutline = document.getElementById('cutline');
+  var result = document.getElementById('result');
+  var shortUrlText = document.getElementById('shortUrlText');
+  var copyBtn = document.getElementById('copyBtn');
+  var againBtn = document.getElementById('againBtn');
+
+  var gateOverlay = document.getElementById('gateOverlay');
+  var gateCard = document.getElementById('gateCard');
+  var gateCheckbox = document.getElementById('gateCheckbox');
+  var gateContinueBtn = document.getElementById('gateContinueBtn');
+  var appContent = document.getElementById('appContent');
+
+  gateCheckbox.addEventListener('change', function(){
+    gateContinueBtn.disabled = !gateCheckbox.checked;
+  });
+
+  gateContinueBtn.addEventListener('click', function(){
+    gateOverlay.style.display = 'none';
+    appContent.removeAttribute('inert');
+    appContent.removeAttribute('aria-hidden');
+    longUrlInput.focus();
+  });
+
+  gateCard.focus();
+
+  var ALIAS_RE = /^[A-Za-z0-9_]{5,30}$/;
+  var MAX_URL_LEN = 2048;
+
+  function showError(msg){
+    errorMsg.textContent = msg; // textContent only — never innerHTML
+    errorMsg.classList.add('show');
+  }
+
+  function clearError(){
+    errorMsg.textContent = '';
+    errorMsg.classList.remove('show');
+  }
+
+  // Checks the pasted link for basic validity AND common malicious-link
+  // patterns. This is heuristic, pattern-based screening — it catches known
+  // obfuscation tricks, but it is not a live threat-intelligence lookup
+  // (that would need an external API and its own key; see footer note).
+  function analyzeUrl(value){
+    if (!value || value.length > MAX_URL_LEN) {
+      return { ok:false, reason:'Enter a valid link starting with https://' };
+    }
+    var parsed;
+    try { parsed = new URL(value); } catch (e) {
+      return { ok:false, reason:'Enter a valid link starting with https://' };
+    }
+    if (parsed.protocol !== 'https:') {
+      return { ok:false, reason:'Only secure https:// links are accepted. Plain http:// links are refused.' };
+    }
+    if (parsed.username || parsed.password) {
+      return { ok:false, reason:'This link embeds login-style text before the domain (a common phishing trick) — refused for safety.' };
+    }
+    var hostname = parsed.hostname || '';
+    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname) || hostname.indexOf(':') !== -1) {
+      return { ok:false, reason:'Links pointing straight at a raw IP address instead of a domain name are refused for safety.' };
+    }
+    var labels = hostname.split('.');
+    if (labels.some(function(label){ return label.toLowerCase().indexOf('xn--') === 0; })) {
+      return { ok:false, reason:'This domain uses encoded (punycode) characters, often used to impersonate real sites — refused for safety.' };
+    }
+    if (labels.length > 6) {
+      return { ok:false, reason:'This link has an unusually deep subdomain chain, a pattern often used to disguise the real destination — refused for safety.' };
+    }
+    return { ok:true };
+  }
+
+  // is.gd's API doesn't send CORS headers, so a normal fetch() from another
+  // domain gets silently blocked by the browser — that was the "could not
+  // reach the shortening service" error. Their API supports a callback
+  // parameter for JSONP instead, which loads via a <script> tag and isn't
+  // subject to CORS. This is the correct way to call it from a static page.
+  function jsonpRequest(url, onSuccess, onError, timeoutMs){
+    var callbackName = 'cutlineCb' + Date.now() + Math.floor(Math.random() * 100000);
+    var script = document.createElement('script');
+    var timeoutId;
+    var done = false;
+
+    function cleanup(){
+      done = true;
+      delete window[callbackName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+      clearTimeout(timeoutId);
+    }
+
+    window[callbackName] = function(data){
+      if (done) return;
+      cleanup();
+      onSuccess(data);
+    };
+
+    script.onerror = function(){
+      if (done) return;
+      cleanup();
+      onError();
+    };
+
+    timeoutId = setTimeout(function(){
+      if (done) return;
+      cleanup();
+      onError();
+    }, timeoutMs || 8000);
+
+    script.src = url + (url.indexOf('?') === -1 ? '?' : '&') + 'callback=' + encodeURIComponent(callbackName);
+    document.head.appendChild(script);
+  }
+
+  function setLoading(isLoading){
+    submitBtn.disabled = isLoading;
+    submitBtn.textContent = isLoading ? 'Cutting…' : 'Cut it short';
+  }
+
+  function resetForm(){
+    form.reset();
+    clearError();
+    result.classList.remove('show');
+    cutline.classList.remove('show','snip');
+    longUrlInput.focus();
+  }
+
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    clearError();
+    result.classList.remove('show');
+    cutline.classList.remove('show','snip');
+
+    var longUrl = longUrlInput.value.trim();
+    var alias = aliasInput.value.trim();
+
+    var check = analyzeUrl(longUrl);
+    if (!check.ok) {
+      showError(check.reason);
+      return;
+    }
+    if (alias && !ALIAS_RE.test(alias)) {
+      showError('Custom names must be 5-30 characters, letters/numbers/underscore only (no hyphens).');
+      return;
+    }
+
+    var params = new URLSearchParams();
+    params.set('format', 'json');
+    params.set('url', longUrl);
+    if (alias) params.set('shorturl', alias);
+
+    var endpoint = 'https://is.gd/create.php?' + params.toString();
+
+    setLoading(true);
+
+    jsonpRequest(endpoint, function(data){
+      setLoading(false);
+      if (data && data.errorcode) {
+        showError(data.errormessage || 'That request could not be completed. Try again.');
+        return;
+      }
+      if (data && data.shorturl) {
+        shortUrlText.textContent = data.shorturl; // textContent only — never innerHTML
+        cutline.classList.add('show');
+        // trigger snip animation on next frame
+        requestAnimationFrame(function(){ cutline.classList.add('snip'); });
+        result.classList.add('show');
+      } else {
+        showError('Unexpected response from the shortening service. Try again.');
+      }
+    }, function(){
+      setLoading(false);
+      showError('Could not reach the shortening service. Check your connection and try again.');
+    });
+  });
+
+  copyBtn.addEventListener('click', function(){
+    var text = shortUrlText.textContent;
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(function(){
+      copyBtn.textContent = 'Copied';
+      setTimeout(function(){ copyBtn.textContent = 'Copy'; }, 1600);
+    }).catch(function(){
+      showError('Could not copy automatically — select and copy the link manually.');
+    });
+  });
+
+  againBtn.addEventListener('click', resetForm);
+})();
+</script>
+</body>
+</html>
